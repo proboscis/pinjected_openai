@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import random
 import re
 from asyncio import Lock
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ def to_content(img: Image, detail: Literal["auto", "low", "high"] = 'auto'):
         )
     }
 
+
 @dataclass
 class UsageEntry:
     timestamp: datetime
@@ -92,7 +94,6 @@ class RateLimitManager(BaseModel):
 
     async def remaining_calls(self):
         return self.max_calls - len(self.call_history)
-
 
     async def _current_usage(self):
         t = pd.Timestamp.now()
@@ -222,12 +223,13 @@ def openai_rate_limit_managers(
 
 @injected
 async def a_repeat_for_rate_limit(logger, /, task):
+    default_wait = 10
     while True:
         try:
             return await task()
         except RateLimitError as e:
             logger.error(f"rate limit error: {e}")
-            pat = "Please retry after (\d+) seconds."
+            pat = "Please try again in (\d+) seconds."
             match = re.search(pat, e.message)
             if match:
                 seconds = int(match.group(1))
@@ -235,7 +237,10 @@ async def a_repeat_for_rate_limit(logger, /, task):
                 await asyncio.sleep(seconds)
             else:
                 logger.warning(f"failed to parse rate limit error message: {e.message}")
-                await asyncio.sleep(10)
+                zitter = random.random() * 30
+                to_wait = default_wait + zitter
+                await asyncio.sleep(to_wait)
+                default_wait = to_wait
         except APITimeoutError as e:
             logger.warning(f"API timeout error: {e}")
             await asyncio.sleep(10)
@@ -286,20 +291,32 @@ def openai_model_pricing_table():
     # keys = [k.replace("_", "-") for k in keys]
     return {k.replace("_", "-"): getattr(pricing_model, k) for k in keys}
 
+
+"""
+TODO rate limit using model_name,
+and retry exponentially.
+"""
+
+class StructuredLLMNoneException(Exception):
+    def __init__(self, message,completion):
+        super().__init__(message)
+        self.completion = completion
+
 @injected
 async def a_vision_llm__openai(
-        async_openai_client: AsyncOpenAI,
+        async_openai_client: AsyncOpenAI, # I thought async_openai_client is global singleton,,, though... we need to switch client in some cases.
         a_repeat_for_rate_limit,
         a_chat_completion_to_cost,
         chat_completion_costs_subject: reactivex.Subject,
         a_enable_cost_logging: Callable,
+        logger,
         /,
         text: str,
         images: list[Image] = None,
         model: str = "gpt-4o",
         max_tokens=2048,
         response_format: openai.types.chat.completion_create_params.ResponseFormat = None,
-        detail: Literal["auto", "low", "high"] = 'auto'
+        detail: Literal["auto", "low", "high"] = 'auto',
 ) -> str:
     assert isinstance(async_openai_client, AsyncOpenAI)
     await a_enable_cost_logging()
@@ -311,14 +328,21 @@ async def a_vision_llm__openai(
     for img in images:
         assert isinstance(img, Image), f"image is not Image, but {type(img)}"
 
-    if isinstance(response_format,type) and issubclass(response_format,BaseModel):
+    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
         API = async_openai_client.beta.chat.completions.parse
+
         def get_result(completion):
-            return completion.choices[0].message.parsed
+            data = completion.choices[0].message.parsed
+            if data is None:
+                raise StructuredLLMNoneException("data from llm is None",completion)
+            logger.info(completion)
+            return data
     else:
         API = async_openai_client.chat.completions.create
+
         def get_result(completion):
             return completion.choices[0].message.content
+
     async def task():
 
         chat_completion = await API(
@@ -344,8 +368,8 @@ async def a_vision_llm__openai(
 
     chat_completion = await a_repeat_for_rate_limit(task)
     return get_result(chat_completion)
-    #res = chat_completion.choices[0].message.content
-    #assert isinstance(res, str)
+    # res = chat_completion.choices[0].message.content
+    # assert isinstance(res, str)
     logger.info(f"{model} call result:\n{res}")
     return res
 
@@ -511,6 +535,39 @@ async def a_json_llm__gpt4_turbo(
         model="gpt-4-turbo-preview"
     )
 
+@injected
+async def a_vlm__openai_batched(
+        async_openai_client: AsyncOpenAI,
+        a_repeat_for_rate_limit,
+        a_enable_cost_logging,
+        /,
+        texts: list[str],
+        model_name: str,
+        max_completion_tokens=4096,
+) -> list[str]:
+    assert isinstance(async_openai_client, AsyncOpenAI)
+    await a_enable_cost_logging()
+
+    async def task():
+        completions = await async_openai_client.chat.completions.create_batch(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": 'text',
+                            "text": text
+                        },
+                    ]
+                } for text in texts
+            ],
+            model=model_name,
+            max_tokens=max_completion_tokens
+        )
+        return [c.choices[0].message.content for c in completions]
+
+    completions = await a_repeat_for_rate_limit(task)
+    return completions
 
 test_vision_llm__gpt4 = a_vision_llm__gpt4(
     text="What are inside this image?",
