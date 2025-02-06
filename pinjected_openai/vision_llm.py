@@ -8,7 +8,7 @@ from asyncio import Lock
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Callable
+from typing import Any, Literal, Callable, Optional, Awaitable
 
 import openai.types.chat
 import pandas as pd
@@ -19,10 +19,10 @@ from loguru import logger
 from math import ceil
 from openai import AsyncOpenAI, RateLimitError, APITimeoutError, APIConnectionError
 from openai.types.chat import ChatCompletion
-from pinjected import injected, Injected, instances, instance
 from pydantic import BaseModel
 from pydantic import Field
-
+from pinjected import *
+from tenacity import retry,stop_after_attempt,retry_if_exception_type
 
 class ChatCompletionWithCost(BaseModel):
     src: ChatCompletion
@@ -36,19 +36,16 @@ def chat_completion_costs_subject():
     return reactivex.Subject()
 
 
-def to_content(img: Image, detail: Literal["auto", "low", "high"] = 'auto'):
+def to_content(img: Image, detail: Literal["auto", "low", "high"] = "auto"):
     # convert Image into jpeg bytes
     jpg_bytes = io.BytesIO()
-    img.convert('RGB').save(jpg_bytes, format='jpeg', quality=95)
-    b64_image = base64.b64encode(jpg_bytes.getvalue()).decode('utf-8')
+    img.convert("RGB").save(jpg_bytes, format="jpeg", quality=95)
+    b64_image = base64.b64encode(jpg_bytes.getvalue()).decode("utf-8")
     mb_of_b64 = len(b64_image) / 1024 / 1024
     logger.info(f"image size: {mb_of_b64:.2f} MB in base64.")
     return {
-        "type": 'image_url',
-        "image_url": dict(
-            url=f"data:image/jpeg;base64,{b64_image}",
-            detail=detail
-        )
+        "type": "image_url",
+        "image_url": dict(url=f"data:image/jpeg;base64,{b64_image}", detail=detail),
     }
 
 
@@ -97,7 +94,9 @@ class RateLimitManager(BaseModel):
 
     async def _current_usage(self):
         t = pd.Timestamp.now()
-        self.call_history = [e for e in self.call_history if e.timestamp > t - self.duration]
+        self.call_history = [
+            e for e in self.call_history if e.timestamp > t - self.duration
+        ]
         return sum(e.tokens for e in self.call_history)
 
     class Config:
@@ -140,35 +139,29 @@ personal_limits = Limits(
         modeltoken_limits=10000000,
         request_limits=10000,
         other_limits=1500000000,
-        batch_queue_limits=BatchQueueLimits(tpm=300000, rpm=10000, tpd=45000000)
+        batch_queue_limits=BatchQueueLimits(tpm=300000, rpm=10000, tpd=45000000),
     ),
     gpt_3_5_turbo=ModelLimits(
         modeltoken_limits=2000000,
         request_limits=10000,
         other_limits=300000000,
-        batch_queue_limits=BatchQueueLimits(tpm=2000000, rpm=10000, tpd=300000000)
+        batch_queue_limits=BatchQueueLimits(tpm=2000000, rpm=10000, tpd=300000000),
     ),
     gpt_4_turbo=ModelLimits(
         modeltoken_limits=2000000,
         request_limits=10000,
         other_limits=300000000,
-        batch_queue_limits=BatchQueueLimits(tpm=2000000, rpm=10000, tpd=300000000)
+        batch_queue_limits=BatchQueueLimits(tpm=2000000, rpm=10000, tpd=300000000),
     ),
     text_embedding_3_small=ModelLimits(
         modeltoken_limits=10000000,
         request_limits=10000,
         other_limits=4000000000,
-        batch_queue_limits=BatchQueueLimits(tpm=10000000, rpm=10000, tpd=4000000000)
+        batch_queue_limits=BatchQueueLimits(tpm=10000000, rpm=10000, tpd=4000000000),
     ),
-    dall_e_3=ModelLimits(
-        batch_queue_limits=BatchQueueLimits(images_per_minute=50)
-    ),
-    tts_1=ModelLimits(
-        batch_queue_limits=BatchQueueLimits(rpm=500)
-    ),
-    whisper_1=ModelLimits(
-        batch_queue_limits=BatchQueueLimits(rpm=500)
-    )
+    dall_e_3=ModelLimits(batch_queue_limits=BatchQueueLimits(images_per_minute=50)),
+    tts_1=ModelLimits(batch_queue_limits=BatchQueueLimits(rpm=500)),
+    whisper_1=ModelLimits(batch_queue_limits=BatchQueueLimits(rpm=500)),
 )
 
 
@@ -179,21 +172,46 @@ class ModelPricing(BaseModel):
 
 class PricingModel(BaseModel):
     gpt_4_turbo: ModelPricing = ModelPricing(input_cost=0.0100, output_cost=0.0300)
-    gpt_4_turbo_2024_04_09: ModelPricing = ModelPricing(input_cost=0.0100, output_cost=0.0300)
+    gpt_4_turbo_2024_04_09: ModelPricing = ModelPricing(
+        input_cost=0.0100, output_cost=0.0300
+    )
     gpt_4: ModelPricing = ModelPricing(input_cost=0.0300, output_cost=0.0600)
     gpt_4_32k: ModelPricing = ModelPricing(input_cost=0.0600, output_cost=0.1200)
-    gpt_4_0125_preview: ModelPricing = ModelPricing(input_cost=0.0100, output_cost=0.0300)
-    gpt_4_1106_preview: ModelPricing = ModelPricing(input_cost=0.0100, output_cost=0.0300)
-    gpt_4_vision_preview: ModelPricing = ModelPricing(input_cost=0.0100, output_cost=0.0300)
-    gpt_3_5_turbo_1106: ModelPricing = ModelPricing(input_cost=0.0010, output_cost=0.0020)
-    gpt_3_5_turbo_0613: ModelPricing = ModelPricing(input_cost=0.0015, output_cost=0.0020)
-    gpt_3_5_turbo_16k_0613: ModelPricing = ModelPricing(input_cost=0.0030, output_cost=0.0040)
-    gpt_3_5_turbo_0301: ModelPricing = ModelPricing(input_cost=0.0015, output_cost=0.0020)
+    gpt_4_0125_preview: ModelPricing = ModelPricing(
+        input_cost=0.0100, output_cost=0.0300
+    )
+    gpt_4_1106_preview: ModelPricing = ModelPricing(
+        input_cost=0.0100, output_cost=0.0300
+    )
+    gpt_4_vision_preview: ModelPricing = ModelPricing(
+        input_cost=0.0100, output_cost=0.0300
+    )
+    gpt_3_5_turbo_1106: ModelPricing = ModelPricing(
+        input_cost=0.0010, output_cost=0.0020
+    )
+    gpt_3_5_turbo_0613: ModelPricing = ModelPricing(
+        input_cost=0.0015, output_cost=0.0020
+    )
+    gpt_3_5_turbo_16k_0613: ModelPricing = ModelPricing(
+        input_cost=0.0030, output_cost=0.0040
+    )
+    gpt_3_5_turbo_0301: ModelPricing = ModelPricing(
+        input_cost=0.0015, output_cost=0.0020
+    )
     davinci_002: ModelPricing = ModelPricing(input_cost=0.0020, output_cost=0.0020)
     babbage_002: ModelPricing = ModelPricing(input_cost=0.0004, output_cost=0.0004)
     gpt_4o: ModelPricing = ModelPricing(input_cost=0.0025, output_cost=0.0150)
-    gpt_4o_2024_05_13: ModelPricing = ModelPricing(input_cost=0.0025, output_cost=0.0150)
-    gpt_4o_2024_08_06: ModelPricing = ModelPricing(input_cost=0.0025, output_cost=0.0150)
+    gpt_4o_2024_05_13: ModelPricing = ModelPricing(
+        input_cost=0.0025, output_cost=0.0150
+    )
+    gpt_4o_2024_08_06: ModelPricing = ModelPricing(
+        input_cost=0.0025, output_cost=0.0150
+    )
+    # o3_mini_2025_01_31: ModelPricing = ModelPricing(input_cost=1.10/1000, output_cost=4.40/1000)
+    o3_mini_2025_01_31: ModelPricing = ModelPricing(
+        input_cost=0.0011, output_cost=0.0044
+    )
+    o1_2024_12_17: ModelPricing = ModelPricing(input_cost=0.0151, output_cost=0.060)
 
 
 pricing_model = PricingModel()
@@ -201,9 +219,7 @@ pricing_model = PricingModel()
 
 @instance
 def openai_rate_limit_managers(
-        openai_api_key,
-        openai_organization,
-        openai_rate_limits: Limits
+    openai_api_key, openai_organization, openai_rate_limits: Limits
 ) -> dict[Any, RateLimitManager]:
     managers = dict()
     for model, limits in openai_rate_limits.dict().items():
@@ -211,7 +227,7 @@ def openai_rate_limit_managers(
             api_key=openai_api_key,
             organization=openai_organization,
             model_name=model,
-            request_type="completion"
+            request_type="completion",
         )
         managers[key] = RateLimitManager(
             max_tokens=limits.modeltoken_limits,
@@ -229,7 +245,7 @@ async def a_repeat_for_rate_limit(logger, /, task):
             return await task()
         except RateLimitError as e:
             logger.error(f"rate limit error: {e}")
-            pat = "Please try again in (\d+) seconds."
+            pat = r"Please try again in (\d+) seconds."
             match = re.search(pat, e.message)
             if match:
                 seconds = int(match.group(1))
@@ -271,25 +287,26 @@ def openai_count_image_tokens(width: int, height: int):
 
 @injected
 async def a_chat_completion_to_cost(
-        openai_model_pricing_table: dict[str, ModelPricing],
-        /,
-        completion: ChatCompletion
+    openai_model_pricing_table: dict[str, ModelPricing], /, completion: ChatCompletion
 ) -> ChatCompletionWithCost:
     pricing = openai_model_pricing_table[completion.model]
     usage = completion.usage
     return ChatCompletionWithCost(
         src=completion,
-        total_cost_usd=pricing.input_cost * usage.prompt_tokens / 1000 + pricing.output_cost * usage.completion_tokens / 1000,
+        total_cost_usd=pricing.input_cost * usage.prompt_tokens / 1000
+        + pricing.output_cost * usage.completion_tokens / 1000,
         prompt_cost_usd=pricing.input_cost * usage.prompt_tokens / 1000,
-        completion_cost_usd=pricing.output_cost * usage.completion_tokens / 1000
+        completion_cost_usd=pricing.output_cost * usage.completion_tokens / 1000,
     )
 
 
 @instance
-def openai_model_pricing_table():
+def openai_model_pricing_table(logger):
     keys = pricing_model.dict().keys()
     # keys = [k.replace("_", "-") for k in keys]
-    return {k.replace("_", "-"): getattr(pricing_model, k) for k in keys}
+    table = {k.replace("_", "-"): getattr(pricing_model, k) for k in keys}
+    logger.info(f"openai api pricing table:{table}")
+    return table
 
 
 """
@@ -297,29 +314,76 @@ TODO rate limit using model_name,
 and retry exponentially.
 """
 
+
 class StructuredLLMNoneException(Exception):
-    def __init__(self, message,completion):
+    def __init__(self, message, completion):
+        super().__init__(message)
+        self.completion = completion
+
+
+@instance
+def __openai_call_stat__():
+    return dict()
+
+class StructuredLLMRefusalException(Exception):
+    def __init__(self, message, completion):
         super().__init__(message)
         self.completion = completion
 
 @injected
-async def a_vision_llm__openai(
-        async_openai_client: AsyncOpenAI, # I thought async_openai_client is global singleton,,, though... we need to switch client in some cases.
-        a_repeat_for_rate_limit,
-        a_chat_completion_to_cost,
-        chat_completion_costs_subject: reactivex.Subject,
-        a_enable_cost_logging: Callable,
-        logger,
-        /,
-        text: str,
-        images: list[Image] = None,
-        model: str = "gpt-4o",
-        max_tokens=2048,
-        response_format: openai.types.chat.completion_create_params.ResponseFormat = None,
-        detail: Literal["auto", "low", "high"] = 'auto',
-) -> str:
-    assert isinstance(async_openai_client, AsyncOpenAI)
+async def a_call_openai_api(
+    a_repeat_for_rate_limit,
+    a_enable_cost_logging,
+    a_chat_completion_to_cost,
+    __openai_call_stat__,
+    /,
+    api_object: Callable[[...], Awaitable],
+    api_kwargs: dict,
+) -> ChatCompletionWithCost:
     await a_enable_cost_logging()
+    async def task():
+        __openai_call_stat__["total_calls"] = (
+            __openai_call_stat__.get("total_calls", 0) + 1
+        )
+        chat_completion = await api_object(**api_kwargs)
+        cost: ChatCompletionWithCost = await a_chat_completion_to_cost(chat_completion)
+        chat_completion_costs_subject.on_next(cost)
+        __openai_call_stat__["total_cost_usd"] = (
+            __openai_call_stat__.get("total_cost_usd", 0) + cost.total_cost_usd
+        )
+        cumulative_cost = __openai_call_stat__["total_cost_usd"]
+        logger.info(
+            f"cost: {cost.total_cost_usd:.4f} USD, cumulative: {cumulative_cost:.4f} USD"
+        )
+        refusal = cost.src.choices[0].message.refusal
+        if refusal is not None:
+            raise StructuredLLMRefusalException(f"refusal from llm:{refusal}", cost)
+        return cost
+
+    return await a_repeat_for_rate_limit(task)
+
+
+@injected
+async def a_vision_llm__openai(
+    async_openai_client: AsyncOpenAI,
+    logger,
+    a_call_openai_api,
+    /,
+    text: str,
+    images: Optional[list[Image]] = None,
+    model: str = "gpt-4o",
+    max_tokens=None,  # deprecated
+    max_completion_tokens=None,  # same as max_tokens
+    response_format: openai.types.chat.completion_create_params.ResponseFormat = None,
+    detail: Literal["auto", "low", "high"] = "auto",
+    reasoning_effort: Literal["low", "medium", "high"] = None,
+) -> str:
+    if max_completion_tokens is None:
+        if max_tokens is None:
+            max_completion_tokens = 2048
+        max_completion_tokens = max_tokens
+
+    assert isinstance(async_openai_client, AsyncOpenAI)
     if images is None:
         images = []
     if response_format is None:
@@ -334,44 +398,43 @@ async def a_vision_llm__openai(
         def get_result(completion):
             data = completion.choices[0].message.parsed
             if data is None:
-                raise StructuredLLMNoneException("data from llm is None",completion)
+                raise StructuredLLMNoneException("data from llm is None", completion)
             logger.info(completion)
             return data
+
     else:
         API = async_openai_client.chat.completions.create
 
         def get_result(completion):
             return completion.choices[0].message.content
 
+    api_kwargs = dict(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    *[to_content(img, detail=detail) for img in images],
+                ],
+            }
+        ],
+        model=model,
+        max_completion_tokens=max_completion_tokens,
+        response_format=response_format,
+    )
+    if reasoning_effort is not None:
+        api_kwargs["reasoning_effort"] = reasoning_effort
+
+    @retry(
+        retry=retry_if_exception_type(StructuredLLMRefusalException),
+        stop=stop_after_attempt(3),
+    )
     async def task():
-
-        chat_completion = await API(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": 'text',
-                            "text": text
-                        },
-                        *[to_content(img, detail=detail) for img in images]
-                    ]
-                }
-            ],
-            model=model,
-            max_tokens=max_tokens,
-            response_format=response_format
+        chat_completion: ChatCompletionWithCost = await a_call_openai_api(
+            api_object=API, api_kwargs=api_kwargs
         )
-        cost: ChatCompletionWithCost = await a_chat_completion_to_cost(chat_completion)
-        chat_completion_costs_subject.on_next(cost)
-        return chat_completion
-
-    chat_completion = await a_repeat_for_rate_limit(task)
-    return get_result(chat_completion)
-    # res = chat_completion.choices[0].message.content
-    # assert isinstance(res, str)
-    logger.info(f"{model} call result:\n{res}")
-    return res
+        return get_result(chat_completion.src)
+    return await task()
 
 
 @instance
@@ -383,9 +446,7 @@ async def cost_logging_state():
 
 @injected
 async def a_enable_cost_logging(
-        cost_logging_state: dict,
-        chat_completion_costs_subject: reactivex.Subject,
-        /
+    cost_logging_state: dict, chat_completion_costs_subject: reactivex.Subject, /
 ):
     if cost_logging_state["enabled"]:
         return
@@ -394,7 +455,9 @@ async def a_enable_cost_logging(
     def on_next(cost: ChatCompletionWithCost):
         nonlocal cumulative_cost
         cumulative_cost += cost.total_cost_usd
-        logger.info(f"cost: {cost.total_cost_usd:.4f} USD, cumulative: {cumulative_cost:.4f} USD")
+        logger.info(
+            f"cost: {cost.total_cost_usd:.4f} USD, cumulative: {cumulative_cost:.4f} USD"
+        )
 
     chat_completion_costs_subject.subscribe(on_next)
     cost_logging_state["enabled"] = True
@@ -404,26 +467,32 @@ a_vision_llm__gpt4o = Injected.partial(a_vision_llm__openai, model="gpt-4o")
 _test_a_gpt4o: Injected = Injected.procedure(
     a_enable_cost_logging(),
     a_vision_llm__gpt4o("hello?"),
-    a_vision_llm__gpt4o("hello hello")
+    a_vision_llm__gpt4o("hello hello"),
 )
-a_vision_llm__gpt4 = Injected.partial(a_vision_llm__openai, model="gpt-4-vision-preview")
+a_vision_llm__gpt4 = Injected.partial(
+    a_vision_llm__openai, model="gpt-4-vision-preview"
+)
 a_cached_vision_llm__gpt4o = async_cached(
-    sqlite_dict(str(Path("~/.cache/pinjected_openai/a_vision_llm__gpt4o.sqlite").expanduser()))
+    sqlite_dict(
+        str(Path("~/.cache/pinjected_openai/a_vision_llm__gpt4o.sqlite").expanduser())
+    )
 )(a_vision_llm__gpt4o)
 a_cached_vision_llm__gpt4 = async_cached(
-    sqlite_dict(str(Path("~/.cache/pinjected_openai/a_vision_llm__gpt4.sqlite").expanduser()))
+    sqlite_dict(
+        str(Path("~/.cache/pinjected_openai/a_vision_llm__gpt4.sqlite").expanduser())
+    )
 )(a_vision_llm__gpt4)
 
 
 @injected
 async def a_llm__openai(
-        async_openai_client: AsyncOpenAI,
-        a_repeat_for_rate_limit,
-        a_enable_cost_logging,
-        /,
-        text: str,
-        model_name: str,
-        max_completion_tokens=4096,
+    async_openai_client: AsyncOpenAI,
+    a_repeat_for_rate_limit,
+    a_enable_cost_logging,
+    /,
+    text: str,
+    model_name: str,
+    max_completion_tokens=4096,
 ) -> str:
     assert isinstance(async_openai_client, AsyncOpenAI)
     await a_enable_cost_logging()
@@ -437,15 +506,12 @@ async def a_llm__openai(
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": 'text',
-                            "text": text
-                        },
-                    ]
+                        {"type": "text", "text": text},
+                    ],
                 }
             ],
             model=model_name,
-            max_tokens=max_completion_tokens
+            max_tokens=max_completion_tokens,
         )
         return chat_completion
 
@@ -458,12 +524,13 @@ async def a_llm__openai(
 
 @injected
 async def a_llm__gpt4_turbo(
-        a_llm__openai,
-        /,
-        text: str,
-        max_completion_tokens=4096
+    a_llm__openai, /, text: str, max_completion_tokens=4096
 ) -> str:
-    return await a_llm__openai(text, max_completion_tokens=max_completion_tokens, model_name="gpt-4-turbo-preview")
+    return await a_llm__openai(
+        text,
+        max_completion_tokens=max_completion_tokens,
+        model_name="gpt-4-turbo-preview",
+    )
 
 
 a_llm__gpt4_turbo_cached = async_cached(
@@ -473,23 +540,22 @@ a_llm__gpt4_turbo_cached = async_cached(
 
 @injected
 async def a_llm__gpt35_turbo(
-        a_llm__openai,
-        /,
-        text: str,
-        max_completion_tokens=4096
+    a_llm__openai, /, text: str, max_completion_tokens=4096
 ) -> str:
-    return await a_llm__openai(text, max_completion_tokens=max_completion_tokens, model_name="gpt-3.5-turbo")
+    return await a_llm__openai(
+        text, max_completion_tokens=max_completion_tokens, model_name="gpt-3.5-turbo"
+    )
 
 
 @injected
 async def a_json_llm__openai(
-        logger,
-        async_openai_client: AsyncOpenAI,
-        a_repeat_for_rate_limit,
-        /,
-        text: str,
-        max_completion_tokens=4096,
-        model="gpt-4-0125-preview"
+    logger,
+    async_openai_client: AsyncOpenAI,
+    a_repeat_for_rate_limit,
+    /,
+    text: str,
+    max_completion_tokens=4096,
+    model="gpt-4-0125-preview",
 ) -> str:
     assert isinstance(async_openai_client, AsyncOpenAI)
 
@@ -502,16 +568,13 @@ async def a_json_llm__openai(
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": 'text',
-                            "text": text
-                        },
-                    ]
+                        {"type": "text", "text": text},
+                    ],
                 }
             ],
             model=model,
             max_tokens=max_completion_tokens,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
         )
         return chat_completion
 
@@ -524,26 +587,24 @@ async def a_json_llm__openai(
 
 @injected
 async def a_json_llm__gpt4_turbo(
-        a_json_llm__openai,
-        /,
-        text: str,
-        max_completion_tokens=4096
+    a_json_llm__openai, /, text: str, max_completion_tokens=4096
 ) -> str:
     return await a_json_llm__openai(
         text=text,
         max_completion_tokens=max_completion_tokens,
-        model="gpt-4-turbo-preview"
+        model="gpt-4-turbo-preview",
     )
+
 
 @injected
 async def a_vlm__openai_batched(
-        async_openai_client: AsyncOpenAI,
-        a_repeat_for_rate_limit,
-        a_enable_cost_logging,
-        /,
-        texts: list[str],
-        model_name: str,
-        max_completion_tokens=4096,
+    async_openai_client: AsyncOpenAI,
+    a_repeat_for_rate_limit,
+    a_enable_cost_logging,
+    /,
+    texts: list[str],
+    model_name: str,
+    max_completion_tokens=4096,
 ) -> list[str]:
     assert isinstance(async_openai_client, AsyncOpenAI)
     await a_enable_cost_logging()
@@ -554,25 +615,23 @@ async def a_vlm__openai_batched(
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": 'text',
-                            "text": text
-                        },
-                    ]
-                } for text in texts
+                        {"type": "text", "text": text},
+                    ],
+                }
+                for text in texts
             ],
             model=model_name,
-            max_tokens=max_completion_tokens
+            max_tokens=max_completion_tokens,
         )
         return [c.choices[0].message.content for c in completions]
 
     completions = await a_repeat_for_rate_limit(task)
     return completions
 
+
 test_vision_llm__gpt4 = a_vision_llm__gpt4(
     text="What are inside this image?",
-    images=Injected.list(
-    ),
+    images=Injected.list(),
 )
 """
 ('The image appears to be an advertisement or an informational graphic about '
@@ -587,12 +646,8 @@ test_vision_llm__gpt4 = a_vision_llm__gpt4(
  'nutrition.')
 """
 
-test_llm__gpt4_turbo = a_llm__gpt4_turbo(
-    "Hello world"
-)
+test_llm__gpt4_turbo = a_llm__gpt4_turbo("Hello world")
 
-test_json_llm__gpt4_turbo = a_json_llm__gpt4_turbo(
-    "Hello world, respond to me in json"
-)
+test_json_llm__gpt4_turbo = a_json_llm__gpt4_turbo("Hello world, respond to me in json")
 
 __meta_design__ = instances()
