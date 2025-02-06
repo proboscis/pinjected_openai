@@ -190,7 +190,9 @@ async def a_openrouter_chat_completion(
         schema_prompt = await a_cached_schema_example_provider(response_format.model_json_schema())
         prompt += f"""The response must follow the following json format example:{schema_prompt}"""
     if provider is not None:
-        provider_filter.update(provider)
+        p = provider_filter.get('provider', dict())
+        p.update(provider)
+        provider_filter['provider'] = p
 
     payload: Dict[str, Any] = {
         "model": model,
