@@ -10,7 +10,7 @@ import logging
 from openai.types.chat import ChatCompletion, ParsedChoice
 import PIL
 
-from pinjected_openai.vision_llm import a_vision_llm__gpt4o
+from pinjected_openai.vision_llm import a_vision_llm__gpt4o, to_content
 
 
 # from vision_llm import a_vision_llm__gpt4o
@@ -199,7 +199,8 @@ async def a_openrouter_chat_completion(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    *[{"type": "image", "data": img} for img in images or []]
+                    #*[{"type": "image", "data": img} for img in images or []]
+                    *[to_content(img) for img in images or []]
                 ]
             }
         ],
