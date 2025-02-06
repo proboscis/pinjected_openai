@@ -216,6 +216,7 @@ async def a_openrouter_chat_completion(
         raise RuntimeError(f"Error in response: {res}")
     cost_dict = openrouter_model_table.pricing(model).calc_cost_dict(res['usage'])
     openrouter_state['cumulative_cost'] = openrouter_state.get('cumulative_cost', 0) + sum(cost_dict.values())
+    logger.debug(f"response:{pformat(res)}")
     logger.info(f"Cost of completion: {cost_dict}, cumulative cost: {openrouter_state['cumulative_cost']}")
     data = res['choices'][0]['message']['content']
 
