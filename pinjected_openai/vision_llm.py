@@ -200,7 +200,7 @@ class PricingModel(BaseModel):
     )
     davinci_002: ModelPricing = ModelPricing(input_cost=0.0020, output_cost=0.0020)
     babbage_002: ModelPricing = ModelPricing(input_cost=0.0004, output_cost=0.0004)
-    gpt_4o_mini_2024_07_18 = ModelPricing(input_cost=0.15*0.001, output_cost=0.6*0.001)
+    gpt_4o_mini_2024_07_18:ModelPricing = ModelPricing(input_cost=0.15*0.001, output_cost=0.6*0.001)
     gpt_4o: ModelPricing = ModelPricing(input_cost=0.0025, output_cost=0.0150)
     gpt_4o_2024_05_13: ModelPricing = ModelPricing(
         input_cost=0.0025, output_cost=0.0150
