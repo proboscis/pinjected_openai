@@ -212,14 +212,15 @@ async def a_openrouter_chat_completion(
         **kwargs
     }
     from pprint import pformat
-    logger.debug(f"payload:{pformat(payload)}")
+    #logger.debug(f"payload:{pformat(payload)}")
     res = await a_openrouter_post(payload)
     if 'error' in res:
         raise RuntimeError(f"Error in response: {pformat(res)}")
     cost_dict = openrouter_model_table.pricing(model).calc_cost_dict(res['usage'])
     openrouter_state['cumulative_cost'] = openrouter_state.get('cumulative_cost', 0) + sum(cost_dict.values())
-    logger.debug(f"response:{pformat(res)}")
-    logger.info(f"Cost of completion: {cost_dict}, cumulative cost: {openrouter_state['cumulative_cost']}")
+    #logger.debug(f"response:{pformat(res)}")
+
+    logger.info(f"Cost of completion: {cost_dict}, cumulative cost: {openrouter_state['cumulative_cost']} from {res['provider']}")
     data = res['choices'][0]['message']['content']
 
     if response_format is not None and issubclass(response_format, BaseModel):
