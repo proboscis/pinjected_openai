@@ -3,7 +3,7 @@ from openai.types import CompletionUsage
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 import httpx
-from typing import Optional, List, Dict, Any, cast, Callable, Awaitable
+from typing import Optional, List, Dict, Any, cast, Callable, Awaitable, Protocol
 from pinjected_openai.compatibles import a_openai_compatible_llm
 from pinjected import instance, design, IProxy, injected
 import logging
@@ -126,6 +126,19 @@ async def a_cached_schema_example_provider(
     """
     return await a_vision_llm__gpt4o(prompt)
 
+class OpenRouterChatCompletion(Protocol):
+    async def __call__(
+            self,
+            prompt: str,
+            model: str,
+            max_tokens: int = 8192,
+            temperature: float = 1,
+            images: List[PIL.Image.Image] = None,
+            response_format: Optional[BaseModel] = None,
+            provider: Optional[Dict[str, Any]] = None,
+            **kwargs
+    ) -> Any:
+        ...
 
 @injected
 async def a_openrouter_chat_completion(
