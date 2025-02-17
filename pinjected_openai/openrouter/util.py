@@ -349,6 +349,7 @@ async def a_openrouter_chat_completion(
         p = provider_filter.get('provider', dict())
         p.update(provider)
         provider_filter['provider'] = p
+    images = images or []
     
     images = [await a_resize_image_below_5mb(img) for img in images]
 
