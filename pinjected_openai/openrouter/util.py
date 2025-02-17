@@ -351,7 +351,7 @@ async def a_openrouter_chat_completion(
         p.update(provider)
         provider_filter['provider'] = p
     
-    images = [await a_resize_image_blow_5mb(img) for img in images]
+    images = [await a_resize_image_below_5mb(img) for img in images]
 
     payload: Dict[str, Any] = {
         "model": model,
