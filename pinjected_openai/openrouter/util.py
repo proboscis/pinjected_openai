@@ -9,7 +9,7 @@ from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion
 from pinjected import instance, design, IProxy, injected
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt
+from tenacity import retry, stop_after_attempt, retry_if_exception_type
 
 from pinjected_openai.compatibles import a_openai_compatible_llm
 from pinjected_openai.vision_llm import to_content
@@ -300,6 +300,9 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
 
 
 @injected
+@retry(
+    retry=retry_if_exception_type(httpx.ReadTimeout)
+)
 async def a_openrouter_chat_completion(
         a_openrouter_post,
         logger,
