@@ -276,12 +276,10 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
     current_img = img.copy()
     current_size_mb = get_image_size_mb(current_img)
     
-    logger.info(f"元の画像サイズ: {current_size_mb:.2f}MB, 解像度: {current_img.size}")
-    
     if current_size_mb <= 5:
-        #logger.success(f"画像は既に5MB以下です（{current_size_mb:.2f}MB）")
         return current_img
 
+    logger.info(f"画像サイズが5MBを超えています。縮小を開始します。（現在: {current_size_mb:.2f}MB, 解像度: {current_img.size}）")
     resize_count = 0
     while current_size_mb > 5:
         # 現在のサイズを取得
@@ -294,9 +292,10 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
         current_size_mb = get_image_size_mb(current_img)
         resize_count += 1
         
-        logger.info(f"リサイズ {resize_count}回目: {current_size_mb:.2f}MB, 新しい解像度: {current_img.size}")
+        if resize_count % 5 == 0:  # 5回ごとにログを出力
+            logger.info(f"縮小中: {current_size_mb:.2f}MB, 解像度: {current_img.size}")
 
-    logger.success(f"リサイズ完了: {current_size_mb:.2f}MB, 最終解像度: {current_img.size}")
+    logger.success(f"縮小完了: {current_size_mb:.2f}MB, 最終解像度: {current_img.size}（{resize_count}回の縮小）")
     return current_img
 
 
