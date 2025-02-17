@@ -253,12 +253,59 @@ def build_openai_response_format(response_format):
     )
     return openai_response_format
 
+@injected
+async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
+    """
+    画像を5MB以下にリサイズします。
+    元の画像のアスペクト比を保持しながら、必要に応じて徐々に縮小します。
+
+    Args:
+        logger: ロガーオブジェクト
+        img (PIL.Image.Image): リサイズする画像
+
+    Returns:
+        PIL.Image.Image: 5MB以下にリサイズされた画像
+    """
+    import io
+
+    def get_image_size_mb(image: PIL.Image.Image) -> float:
+        buffer = io.BytesIO()
+        image.save(buffer, format=image.format or 'PNG')
+        return buffer.tell() / (1024 * 1024)  # バイト数をMBに変換
+
+    current_img = img.copy()
+    current_size_mb = get_image_size_mb(current_img)
+    
+    logger.info(f"元の画像サイズ: {current_size_mb:.2f}MB, 解像度: {current_img.size}")
+    
+    if current_size_mb <= 5:
+        #logger.success(f"画像は既に5MB以下です（{current_size_mb:.2f}MB）")
+        return current_img
+
+    resize_count = 0
+    while current_size_mb > 5:
+        # 現在のサイズを取得
+        width, height = current_img.size
+        # 10%ずつ縮小
+        new_width = int(width * 0.9)
+        new_height = int(height * 0.9)
+        # リサイズ実行
+        current_img = current_img.resize((new_width, new_height), PIL.Image.Resampling.LANCZOS)
+        current_size_mb = get_image_size_mb(current_img)
+        resize_count += 1
+        
+        logger.info(f"リサイズ {resize_count}回目: {current_size_mb:.2f}MB, 新しい解像度: {current_img.size}")
+
+    logger.success(f"リサイズ完了: {current_size_mb:.2f}MB, 最終解像度: {current_img.size}")
+    return current_img
+
 
 @injected
 async def a_openrouter_chat_completion(
         a_openrouter_post,
         logger,
         a_cached_schema_example_provider: Callable[[type], Awaitable[str]],
+        a_resize_image_blow_5mb,
         a_structured_llm_for_json_fix,
         openrouter_model_table: OpenRouterModelTable,
         openrouter_state: dict,
@@ -303,6 +350,8 @@ async def a_openrouter_chat_completion(
         p = provider_filter.get('provider', dict())
         p.update(provider)
         provider_filter['provider'] = p
+    
+    images = [await a_resize_image_blow_5mb(img) for img in images]
 
     payload: Dict[str, Any] = {
         "model": model,
@@ -435,6 +484,10 @@ test_return_empty_item: IProxy = a_openrouter_chat_completion(
     prompt=f"Please answer with empty lines.",
     model="deepseek/deepseek-chat",
     response_format=Text
+)
+
+test_resize_image: IProxy = a_resize_image_below_5mb(
+    PIL.Image.new('RGB', (4000, 4000), color='red')
 )
 
 @instance
