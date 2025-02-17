@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pinjected-openai"
-version = "0.4.27a4r"
+version = "0.4.35"
 description = "openai bindings for pinjected library"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,7 +22,7 @@ dependencies = [
     "pinjected",
     "openai>=1.61.0",
     "tiktoken",
-    "injected-utils",
+    "injected-utils>=0.1.27",
     "pydub",
     "pillow",
     "loguru",
@@ -32,6 +32,7 @@ dependencies = [
     "moviepy>=1.0.3",
     "pinjected-rate-limit>=0.1.0",
     "tenacity>=9.0.0",
+    "json-repair>=0.35.0",
 ]
 
 [tool.hatch.metadata]
