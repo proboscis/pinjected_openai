@@ -9,7 +9,7 @@ from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion
 from pinjected import instance, design, IProxy, injected
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, retry_if_exception_type, wait_exponential
 
 from pinjected_openai.compatibles import a_openai_compatible_llm
 from pinjected_openai.vision_llm import to_content
@@ -253,6 +253,7 @@ def build_openai_response_format(response_format):
     )
     return openai_response_format
 
+
 @injected
 async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
     """
@@ -275,11 +276,12 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
 
     current_img = img.copy()
     current_size_mb = get_image_size_mb(current_img)
-    
+
     if current_size_mb <= 5:
         return current_img
 
-    logger.info(f"画像サイズが5MBを超えています。縮小を開始します。（現在: {current_size_mb:.2f}MB, 解像度: {current_img.size}）")
+    logger.info(
+        f"画像サイズが5MBを超えています。縮小を開始します。（現在: {current_size_mb:.2f}MB, 解像度: {current_img.size}）")
     resize_count = 0
     while current_size_mb > 5:
         # 現在のサイズを取得
@@ -291,7 +293,7 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
         current_img = current_img.resize((new_width, new_height), PIL.Image.Resampling.LANCZOS)
         current_size_mb = get_image_size_mb(current_img)
         resize_count += 1
-        
+
         if resize_count % 5 == 0:  # 5回ごとにログを出力
             logger.info(f"縮小中: {current_size_mb:.2f}MB, 解像度: {current_img.size}")
 
@@ -301,7 +303,9 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
 
 @injected
 @retry(
-    retry=retry_if_exception_type(httpx.ReadTimeout)
+    retry=retry_if_exception_type(httpx.ReadTimeout),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
 )
 async def a_openrouter_chat_completion(
         a_openrouter_post,
@@ -353,7 +357,7 @@ async def a_openrouter_chat_completion(
         p.update(provider)
         provider_filter['provider'] = p
     images = images or []
-    
+
     images = [await a_resize_image_below_5mb(img) for img in images]
 
     payload: Dict[str, Any] = {
@@ -493,6 +497,7 @@ test_resize_image: IProxy = a_resize_image_below_5mb(
     PIL.Image.new('RGB', (4000, 4000), color='red')
 )
 
+
 @instance
 def __debug_design():
     from openrouter.instances import a_cached_sllm_gpt4o__openrouter
@@ -501,6 +506,7 @@ def __debug_design():
         a_llm_for_json_schema_example=a_cached_sllm_gpt4o__openrouter,
         a_structured_llm_for_json_fix=a_cached_sllm_gpt4o_mini__openrouter,
     )
+
 
 __meta_design__ = design(
     overrides=__debug_design
