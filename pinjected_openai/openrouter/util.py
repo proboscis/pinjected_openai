@@ -302,11 +302,11 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
 
 
 @injected
-@retry(
-    retry=retry_if_exception_type(httpx.ReadTimeout),
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-)
+# @retry(
+#     retry=retry_if_exception_type(httpx.ReadTimeout),
+#     stop=stop_after_attempt(5),
+#     wait=wait_exponential(multiplier=1, min=4, max=10),
+# )
 async def a_openrouter_chat_completion(
         a_openrouter_post,
         logger,
