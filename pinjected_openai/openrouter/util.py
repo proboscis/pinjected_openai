@@ -305,7 +305,7 @@ async def a_openrouter_chat_completion(
         a_openrouter_post,
         logger,
         a_cached_schema_example_provider: Callable[[type], Awaitable[str]],
-        a_resize_image_blow_5mb,
+        a_resize_image_below_5mb,
         a_structured_llm_for_json_fix,
         openrouter_model_table: OpenRouterModelTable,
         openrouter_state: dict,
