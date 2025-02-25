@@ -356,7 +356,7 @@ async def a_call_openai_api(
         logger.info(
             f"cost: {cost.total_cost_usd:.4f} USD, cumulative: {cumulative_cost:.4f} USD"
         )
-        refusal = cost.src.choices[0].message.refusal
+        refusal = chat_completion.choices[0].message.refusal # ココ
         if refusal is not None:
             raise StructuredLLMRefusalException(f"refusal from llm:{refusal}", cost)
         return cost
@@ -406,7 +406,7 @@ async def a_vision_llm__openai(
     else:
         API = async_openai_client.chat.completions.create
 
-        def get_result(completion):
+        def get_result(completion:ChatCompletion):
             return completion.choices[0].message.content
 
     api_kwargs = dict(
@@ -483,6 +483,12 @@ a_cached_vision_llm__gpt4 = async_cached(
         str(Path("~/.cache/pinjected_openai/a_vision_llm__gpt4.sqlite").expanduser())
     )
 )(a_vision_llm__gpt4)
+
+a_llm_gpto3_mini = Injected.partial(
+    a_vision_llm__openai, model="o3-mini"
+)
+
+test_a_llm_gpto3_mini:IProxy = a_llm_gpto3_mini('hello')
 
 
 @injected

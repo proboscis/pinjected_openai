@@ -199,10 +199,6 @@ cmd_save_transcribe = __save_text(
     a_transcribe_mp3_file(injected("input_file")),
     injected("input_file").eval().map(Path).proxy.with_suffix(".txt")
 )
-with design(
-        input_file='/Users/s22625/Downloads/2024.10.15 13.56 Backtrack.mp4'
-):
-    test_transcribe_mp4: IProxy = cmd_save_transcribe
 
 __meta_design__ = instances(
 )
