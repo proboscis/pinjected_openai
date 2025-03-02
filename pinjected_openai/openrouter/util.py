@@ -1,4 +1,33 @@
-from typing import Optional, List, Dict, Any, Callable, Awaitable, Protocol
+import inspect
+from typing import Any, Dict, List, Optional, Type, Union, get_origin, get_args
+from typing import Callable, Awaitable, Protocol, Literal
+
+
+# Custom exceptions for schema compatibility issues
+class SchemaCompatibilityError(Exception):
+    """Base exception for schema compatibility issues."""
+    pass
+
+
+class OpenAPI3CompatibilityError(SchemaCompatibilityError):
+    """Exception raised when a schema is not compatible with OpenAPI 3.0."""
+
+    def __init__(self, model: Type, issues: Dict[str, List[str]]):
+        self.model = model
+        self.issues = issues
+        message = f"OpenAPI 3.0 compatibility issues found in {model.__name__}: {issues}"
+        super().__init__(message)
+
+
+class GeminiCompatibilityError(SchemaCompatibilityError):
+    """Exception raised when a schema is not compatible with Gemini API."""
+
+    def __init__(self, model: Type, issues: Dict[str, List[str]]):
+        self.model = model
+        self.issues = issues
+        message = f"Gemini API compatibility issues found in {model.__name__}: {issues}"
+        super().__init__(message)
+
 
 import PIL
 import httpx
@@ -7,7 +36,7 @@ from injected_utils.injected_cache_utils import sqlite_dict, async_cached
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion
-from pinjected import instance, design, IProxy, injected
+from pinjected import instance, design, IProxy, injected, Injected
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, retry_if_exception_type, wait_exponential
 
@@ -190,7 +219,7 @@ async def a_openrouter_chat_completion__without_fix(
         provider_filter['provider'] = {
             "require_parameters": True
         }
-        openai_response_format = build_openai_response_format(response_format)
+        openai_response_format = build_openrouter_response_format(response_format)
         provider_filter['response_format'] = openai_response_format
     if provider is not None:
         p = provider_filter.get('provider', dict())
@@ -238,7 +267,7 @@ async def a_openrouter_chat_completion__without_fix(
         return data
 
 
-def build_openai_response_format(response_format):
+def build_openrouter_response_format(response_format):
     pydantic_schema = response_format.model_json_schema()
     pydantic_schema['additionalProperties'] = False
     schema_dict = dict(
@@ -301,6 +330,212 @@ async def a_resize_image_below_5mb(logger, /, img: PIL.Image.Image):
     return current_img
 
 
+__openapi3_compatibility_cache = {}
+
+
+def is_openapi3_compatible(model: Type[BaseModel]) -> Dict[str, List[str]]:
+    """
+    Pydantic BaseModelがOpenAPI 3.0と互換性があるかどうかを判別し、
+    問題がある場合はその詳細を返します。
+
+    Args:
+        model: チェックするPydantic BaseModelクラス
+
+    Returns:
+        互換性の問題のリスト（キー: フィールド名、値: 問題の説明）
+        空の辞書が返される場合は、問題が見つからなかったことを意味します
+    """
+    if model in __openapi3_compatibility_cache:
+        return __openapi3_compatibility_cache[model]
+    incompatibilities = {}
+
+    # モデルのフィールドを取得
+    fields = model.__annotations__
+
+    for field_name, field_type in fields.items():
+        issues = []
+
+        # Union型の検出 (Optional[X]はUnion[X, None]として扱われる)
+        if get_origin(field_type) is Union:
+            # Optional[X] (Union[X, None])は一般的にサポートされているが、
+            # 複数の型を含むUnionはOpenAPI 3.0ではサポートされていない
+            args = get_args(field_type)
+            if len(args) > 2 or (len(args) == 2 and type(None) not in args):
+                issues.append(f"複数タイプのUnion型はOpenAPI 3.0でサポートされていません: {field_type}")
+
+        # List[Union[...]]のような入れ子になった複雑な型をチェック
+        if get_origin(field_type) in (list, List) and get_args(field_type):
+            inner_type = get_args(field_type)[0]
+            if get_origin(inner_type) is Union and len(get_args(inner_type)) > 2:
+                issues.append(f"リスト内の複数Unionタイプ {inner_type} はOpenAPI 3.0でサポートされていません")
+
+        # 再帰的な型参照のチェック（自己参照など）
+        if inspect.isclass(field_type) and issubclass(field_type, BaseModel):
+            # 自己参照型をチェック（簡易版）
+            if field_type == model:
+                issues.append(f"自己参照モデルはOpenAPI 3.0で問題を引き起こす可能性があります")
+
+            # 入れ子になったモデルを再帰的にチェック
+            nested_issues = is_openapi3_compatible(field_type)
+            if nested_issues:
+                for nested_field, nested_issue_list in nested_issues.items():
+                    issues.extend([f"入れ子モデルの問題 ({nested_field}): {issue}" for issue in nested_issue_list])
+
+        # Literal型のチェック
+        try:
+            from typing import Literal
+            if get_origin(field_type) is Literal:
+                # Literalタイプはスキーマで'enum'として表示されますが、
+                # 値の型がすべて同じである必要があります
+                literal_args = get_args(field_type)
+                arg_types = set(type(arg) for arg in literal_args)
+                if len(arg_types) > 1:
+                    issues.append(f"異なる型のLiteral値はOpenAPI 3.0でサポートされていません: {field_type}")
+        except ImportError:
+            pass  # Python 3.7以前ではLiteralが使用できない
+
+        # DiscriminatedUnionのチェック
+        if hasattr(model, 'model_config') and getattr(model.model_config, 'json_schema_extra', None):
+            extra = model.model_config.json_schema_extra
+            if isinstance(extra, dict) and 'discriminator' in extra:
+                issues.append(f"discriminatorはOpenAPI 3.0の実装によっては完全にサポートされていない場合があります")
+
+        if issues:
+            incompatibilities[field_name] = issues
+
+    __openapi3_compatibility_cache[model] = incompatibilities
+
+    return incompatibilities
+
+
+__gemini_compatibility_cache = {}
+
+
+def is_gemini_compatible(model: Type[BaseModel]) -> Dict[str, List[str]]:
+    """
+    Pydantic BaseModelがGoogle Gemini APIと互換性があるかどうかを判別し、
+    問題がある場合はその詳細を返します。Gemini APIはOpenAPI 3.0のサブセットのみをサポートしており、
+    特定の型と構造のみをサポートします。
+
+    サポートされる型:
+    - string (format: enum, datetime)
+    - integer (format: int32, int64)
+    - number (format: float, double)
+    - bool
+    - array (items, minItems, maxItems)
+    - object (properties, required, propertyOrdering, nullable)
+
+    Args:
+        model: チェックするPydantic BaseModelクラス
+
+    Returns:
+        互換性の問題のリスト（キー: フィールド名、値: 問題の説明）
+        空の辞書が返される場合は、問題が見つからなかったことを意味します
+    """
+    if model in __gemini_compatibility_cache:
+        return __gemini_compatibility_cache[model]
+
+    incompatibilities = {}
+
+    # モデルのフィールドを取得
+    fields = model.__annotations__
+
+    for field_name, field_type in fields.items():
+        issues = []
+
+        # Unionはサポートされていない (Optional含む)
+        if get_origin(field_type) is Union:
+            args = get_args(field_type)
+            if type(None) in args:
+                issues.append(
+                    f"Optional型はGemini APIではサポートされていません。代わりに nullable フラグを使用する必要があります: {field_type}")
+            else:
+                issues.append(f"Union型はGemini APIではサポートされていません: {field_type}")
+
+        # リスト/配列の検証
+        elif get_origin(field_type) in (list, List) and get_args(field_type):
+            inner_type = get_args(field_type)[0]
+
+            # リスト内のUnion型はサポートされていない
+            if get_origin(inner_type) is Union:
+                issues.append(f"リスト内のUnion型はGemini APIではサポートされていません: List[{inner_type}]")
+
+            # リスト内の要素が複雑なオブジェクトの場合、再帰的に検証
+            if inspect.isclass(inner_type) and issubclass(inner_type, BaseModel):
+                nested_issues = is_gemini_compatible(inner_type)
+                if nested_issues:
+                    issues.append(f"リスト内の要素に互換性の問題があります: List[{inner_type}]")
+
+        # 辞書型の検証
+        elif get_origin(field_type) in (dict, Dict):
+            # 辞書型のキー・バリューの型を取得
+            key_type, value_type = get_args(field_type)
+
+            # キーがstr型でない場合は警告
+            if key_type is not str:
+                issues.append(
+                    f"Gemini APIで辞書型を使用する場合、キーはstr型である必要があります: Dict[{key_type}, {value_type}]")
+
+            # 値が複合型の場合は再帰的に検証
+            if get_origin(value_type) is not None:
+                issues.append(
+                    f"Gemini APIで辞書型の値に複合型を使用することは推奨されません: Dict[{key_type}, {value_type}]")
+            elif inspect.isclass(value_type) and issubclass(value_type, BaseModel):
+                nested_issues = is_gemini_compatible(value_type)
+                if nested_issues:
+                    issues.append(
+                        f"辞書型の値に互換性の問題があるモデルが使用されています: Dict[{key_type}, {value_type}]")
+
+        # Literalのチェック - Geminiではenumとして扱われる
+        elif get_origin(field_type) is Literal:
+            literal_args = get_args(field_type)
+            arg_types = set(type(arg) for arg in literal_args)
+            if len(arg_types) > 1:
+                issues.append(
+                    f"異なる型を含むLiteral値はGemini APIではサポートされていません。すべての値は同じ型である必要があります: {field_type}")
+
+        # 複雑なオブジェクト (BaseModel) の場合、再帰的に検証
+        elif inspect.isclass(field_type) and issubclass(field_type, BaseModel):
+            # 自己参照型をチェック
+            if field_type == model:
+                issues.append(f"自己参照モデルはGemini APIではサポートされていません")
+
+            # 入れ子になったモデルを再帰的にチェック
+            nested_issues = is_gemini_compatible(field_type)
+            if nested_issues:
+                for nested_field, nested_issue_list in nested_issues.items():
+                    issues.extend([f"入れ子モデルの問題 ({nested_field}): {issue}" for issue in nested_issue_list])
+
+        # サポートされていない型のチェック
+        else:
+            # Python組み込み型との対応関係を確認
+            supported_types = {
+                str: "string",
+                int: "integer",
+                float: "number",
+                bool: "bool",
+                list: "array",
+                dict: "object"
+            }
+
+            # フィールドの型が直接サポートされているかチェック
+            is_supported = False
+            for py_type, schema_type in supported_types.items():
+                if field_type is py_type:
+                    is_supported = True
+                    break
+
+            if not is_supported:
+                issues.append(f"このフィールドの型 {field_type} はGemini APIではサポートされていない可能性があります。" +
+                              "サポートされる型: string, integer, number, bool, array, object")
+
+        if issues:
+            incompatibilities[field_name] = issues
+
+    __gemini_compatibility_cache[model] = incompatibilities
+    return incompatibilities
+
+
 @injected
 @retry(
     retry=retry_if_exception_type(httpx.ReadTimeout),
@@ -345,10 +580,19 @@ async def a_openrouter_chat_completion(
     """
     provider_filter = dict()
     if response_format is not None and issubclass(response_format, BaseModel):
+        # Check OpenAPI 3.0 compatibility for all models
+        if issues := is_openapi3_compatible(response_format):
+            raise OpenAPI3CompatibilityError(response_format, issues)
+
+        # Additional Gemini-specific compatibility check when model contains 'gemini'
+        if 'gemini' in model.lower():
+            if gemini_issues := is_gemini_compatible(response_format):
+                raise GeminiCompatibilityError(response_format, gemini_issues)
+
         provider_filter['provider'] = {
             "require_parameters": True
         }
-        openai_response_format = build_openai_response_format(response_format)
+        openai_response_format = build_openrouter_response_format(response_format)
         provider_filter['response_format'] = openai_response_format
         schema_prompt = await a_cached_schema_example_provider(response_format.model_json_schema())
         prompt += f"""The response must follow the following json format example:{schema_prompt}"""
@@ -428,6 +672,17 @@ async def a_llm__openrouter(
         response_format=None,
         **kwargs
 ):
+    # If response_format is provided, check compatibility
+    if response_format is not None and issubclass(response_format, BaseModel):
+        # Check OpenAPI 3.0 compatibility for all models
+        if issues := is_openapi3_compatible(response_format):
+            raise OpenAPI3CompatibilityError(response_format, issues)
+
+        # Additional Gemini-specific compatibility check when model contains 'gemini'
+        if 'gemini' in model.lower():
+            if gemini_issues := is_gemini_compatible(response_format):
+                raise GeminiCompatibilityError(response_format, gemini_issues)
+
     res: ChatCompletion = await a_openai_compatible_llm(
         api=openrouter_api,
         model=model,
@@ -452,6 +707,10 @@ async def a_llm__openrouter(
 
 class Text(BaseModel):
     text_lines: list[str]
+
+
+class OptionalText(BaseModel):
+    text_lines: Optional[list[str]]
 
 
 test_call_gpt4o: IProxy = a_openrouter_chat_completion__without_fix(
@@ -490,6 +749,109 @@ test_openrouter_chat_completion_with_structure: IProxy = a_openrouter_chat_compl
     # model="deepseek/deepseek-r1-distill-qwen-32b",
     response_format=Text
 )
+
+# this must raise error though...
+test_openrouter_chat_completion_with_structure_optional: IProxy = a_openrouter_chat_completion(
+    prompt=f"What is the capital of Japan?",
+    model="deepseek/deepseek-chat",
+    response_format=OptionalText
+)
+
+
+# Create example models with Union type for testing
+class ContactInfoWithUnion(BaseModel):
+    type: Literal["email", "phone"]
+    value: str
+
+
+class PersonWithUnion(BaseModel):
+    name: str
+    age: int
+    contact: Union[ContactInfoWithUnion, str]  # Union type with complex object and string
+
+
+# Test Gemini models with incompatible schema features
+# These should raise GeminiCompatibilityError with Gemini-specific compatibility issues
+
+# Test with gemini-pro model
+test_gemini_pro_with_incompatible_schema: IProxy = a_openrouter_chat_completion(
+    prompt=f"What is the capital of Japan?",
+    model="google/gemini-pro",
+    response_format=PersonWithUnion  # This has Union type which is incompatible with Gemini
+)
+
+# Test with gemini-flash model
+test_gemini_flash_with_incompatible_schema: IProxy = a_openrouter_chat_completion(
+    prompt=f"What is the capital of Japan?",
+    model="google/gemini-2.0-flash-001",
+    response_format=PersonWithUnion  # This has Union type which is incompatible with Gemini
+)
+
+# Test with a compatible schema
+class SimpleResponse(BaseModel):
+    answer: str
+    confidence: float
+
+test_gemini_flash_with_compatible_schema: IProxy = a_openrouter_chat_completion(
+    prompt=f"What is the capital of Japan? Answer with high confidence.",
+    model="google/gemini-2.0-flash-001",
+    response_format=SimpleResponse  # This should be compatible with Gemini
+)
+
+test_is_openapi3_compatible: IProxy = Injected.pure(is_openapi3_compatible).proxy(Text)
+test_is_openapi3_compatible_optional: IProxy = Injected.pure(is_openapi3_compatible).proxy(OptionalText)
+
+# Tests for is_gemini_compatible function
+test_is_gemini_compatible: IProxy = Injected.pure(is_gemini_compatible).proxy(Text)
+test_is_gemini_compatible_optional: IProxy = Injected.pure(is_gemini_compatible).proxy(OptionalText)
+
+test_is_gemini_compatible_union: IProxy = Injected.pure(is_gemini_compatible).proxy(PersonWithUnion)
+
+
+# Create example models with Dictionary for testing
+class PersonWithDict(BaseModel):
+    name: str
+    age: int
+    attributes: Dict[str, str]  # String keys, string values - should be compatible
+
+
+class PersonWithComplexDict(BaseModel):
+    name: str
+    age: int
+    scores: Dict[int, float]  # Int keys - not compatible
+
+
+class ComplexValue(BaseModel):
+    value: str
+    description: str
+
+
+class PersonWithComplexValueDict(BaseModel):
+    name: str
+    age: int
+    details: Dict[str, ComplexValue]  # String keys, complex values - partially compatible
+
+
+test_is_gemini_compatible_dict: IProxy = Injected.pure(is_gemini_compatible).proxy(PersonWithDict)
+test_is_gemini_compatible_complex_key_dict: IProxy = Injected.pure(is_gemini_compatible).proxy(PersonWithComplexDict)
+test_is_gemini_compatible_complex_value_dict: IProxy = Injected.pure(is_gemini_compatible).proxy(
+    PersonWithComplexValueDict)
+
+
+# Create example model with nested list of complex objects
+class Address(BaseModel):
+    street: str
+    city: str
+    zip_code: str
+
+
+class PersonWithComplexList(BaseModel):
+    name: str
+    age: int
+    addresses: List[Address]
+
+
+test_is_gemini_compatible_complex_list: IProxy = Injected.pure(is_gemini_compatible).proxy(PersonWithComplexList)
 
 test_return_empty_item: IProxy = a_openrouter_chat_completion(
     prompt=f"Please answer with empty lines.",
