@@ -246,7 +246,7 @@ async def a_openrouter_chat_completion__without_fix(
     from pprint import pformat
     res = await a_openrouter_post(payload)
     if 'error' in res:
-        raise RuntimeError(f"Error in response: {pformat(res)}")
+        raise RuntimeError(f"Error in response. \nPayload:{payload}\nResponse:{pformat(res)}")
     cost_dict = openrouter_model_table.pricing(model).calc_cost_dict(res['usage'])
     openrouter_state['cumulative_cost'] = openrouter_state.get('cumulative_cost', 0) + sum(cost_dict.values())
 
