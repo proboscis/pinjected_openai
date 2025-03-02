@@ -149,3 +149,55 @@ jobs:
 ---
 
 By following these practices, you'll maintain a clear version history, make releases more predictable for users, and streamline your development workflow.
+## Git Tags and Dependency Management
+
+### Depending on Specific Git Tags in Other Projects
+
+When other projects need to depend on specific versions of this library directly from Git (rather than PyPI), they can reference specific tags. This is particularly useful for development or when you need features that haven't been published to PyPI yet.
+
+#### Using Rye with pyproject.toml
+
+To depend on a specific Git tag of this library in a project using Rye, add the following to the project's `pyproject.toml`:
+
+```toml
+[project]
+# ... other project configuration ...
+dependencies = [
+    # ... other dependencies ...
+    "pinjected-openai @ git+https://github.com/proboscis/pinjected_openai.git@v1.0.0",
+]
+```
+
+You can also specify a specific commit or branch:
+
+```toml
+# Depend on a specific commit
+"pinjected-openai @ git+https://github.com/proboscis/pinjected_openai.git@5ad6099",
+
+# Depend on a branch
+"pinjected-openai @ git+https://github.com/proboscis/pinjected_openai.git@main",
+```
+
+#### Using Poetry
+
+If using Poetry instead of Rye, the syntax is similar:
+
+```toml
+[tool.poetry.dependencies]
+pinjected-openai = {git = "https://github.com/proboscis/pinjected_openai.git", tag = "v1.0.0"}
+```
+
+#### Using pip
+
+With pip, you can install directly from a Git tag:
+
+```bash
+pip install git+https://github.com/proboscis/pinjected_openai.git@v1.0.0
+```
+
+### Benefits of Using Tagged Versions
+
+- **Stability**: Depending on a specific tag ensures you get a stable, tested version
+- **Reproducibility**: Builds are reproducible since the exact code version is pinned
+- **Flexibility**: You can easily switch between versions by changing the tag reference
+- **Pre-release Access**: Access new features before they're published to PyPI

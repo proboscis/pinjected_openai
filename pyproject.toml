@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pinjected-openai"
-version = "1.0.0"
+version = "1.0.1"
 description = "openai bindings for pinjected library"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pinjected",
+    "pinjected>=0.2.236",
     "openai>=1.61.0",
     "tiktoken",
     "injected-utils>=0.1.27",

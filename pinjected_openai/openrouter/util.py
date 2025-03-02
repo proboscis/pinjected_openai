@@ -403,9 +403,13 @@ async def a_openrouter_chat_completion(
             except Exception as e:
                 logger.warning(f"json_repair could not repair.{data}")
                 fix_prompt = f"""
-Please fix the following json object to match the schema:
+An LLM failed to answer the following input with a correct json format.
+Please fix the following json object (Response) to match the schema:
+# Original Input:
+{prompt}
+# Response
 {data}
-                """
+"""
                 return await a_structured_llm_for_json_fix(fix_prompt, response_format=response_format)
     else:
         return data
